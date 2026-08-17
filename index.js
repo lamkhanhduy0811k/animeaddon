@@ -16,14 +16,15 @@ function formatPoster(posterUrl, thumbUrl) {
     let img = posterUrl || thumbUrl || '';
     if (!img) return '';
     if (!img.startsWith('http')) {
-        img = 'https://phimimg.com/' + img;
+        img = 'https://phimimg.com/' + img.replace(/^\/+/, '');
     }
-    return `https://images.weserv.nl/?url=${encodeURIComponent(img)}&w=800&fit=cover&q=85`;
+    // Trả thẳng link gốc hoặc qua proxy tối ưu không bị lỗi chặn
+    return img;
 }
 
 const manifest = {
-    id: 'vn.animehay.pro.v2',
-    version: '2.0.0',
+    id: 'vn.animehay.pro.v21',
+    version: '2.1.0',
     name: 'AnimeHay & Movie Pro',
     description: 'Addon Anime chuyên nghiệp: Hàng trăm Anime Bộ và Anime Movie phân loại riêng biệt',
     resources: ['catalog', 'meta', 'stream'],
@@ -51,7 +52,6 @@ app.get('/manifest.json', (req, res) => res.json(manifest));
 async function fetchCategoryItems(categoryType) {
     let items = [];
     try {
-        // Tải nhiều trang để đạt số lượng lớn phim
         for (let page = 1; page <= 10; page++) {
             let url = `https://phimapi.com/v1/api/danh-sach/${categoryType}?page=${page}&limit=50`;
             let res = await axios.get(url, { timeout: 4000 });
@@ -59,9 +59,7 @@ async function fetchCategoryItems(categoryType) {
             if (list.length === 0) break;
             items.push(...list);
         }
-    } catch (e) {
-        // Bỏ qua lỗi nhỏ để đảm bảo trả về dữ liệu đã tải được
-    }
+    } catch (e) {}
     return items;
 }
 
@@ -214,4 +212,4 @@ app.get('/stream/:type/:id*', async (req, res) => {
 
 app.listen(process.env.PORT || 3000);
 module.exports = app;
-            
+        
