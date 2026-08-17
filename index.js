@@ -12,30 +12,34 @@ app.use((req, res, next) => {
     next();
 });
 
-const BASE_URL = 'https://animehay11.site';
-
-const client = axios.create({
-    baseURL: BASE_URL,
-    timeout: 5000,
-    headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': BASE_URL
+function formatPoster(posterUrl, thumbUrl) {
+    let img = posterUrl || thumbUrl || '';
+    if (!img) return '';
+    if (!img.startsWith('http')) {
+        img = 'https://phimimg.com/' + img;
     }
-});
+    return `https://images.weserv.nl/?url=${encodeURIComponent(img)}&w=800&fit=cover&q=85`;
+}
 
 const manifest = {
-    id: 'vn.animehay.standalone',
-    version: '1.0.0',
-    name: 'AnimeHay Độc Lập',
-    description: 'Addon Stremio riêng biệt cào dữ liệu từ AnimeHay',
+    id: 'vn.animehay.pro.v2',
+    version: '2.0.0',
+    name: 'AnimeHay & Movie Pro',
+    description: 'Addon Anime chuyên nghiệp: Hàng trăm Anime Bộ và Anime Movie phân loại riêng biệt',
     resources: ['catalog', 'meta', 'stream'],
-    types: ['series'],
+    types: ['series', 'movie'],
     idPrefixes: ['ah_'],
     catalogs: [
         {
             type: 'series',
-            id: 'animehay_moi_cap_nhat',
-            name: 'AnimeHay - Mới Cập Nhật',
+            id: 'anime_bo_pro',
+            name: 'AnimeHay - Anime Bộ (Series)',
+            extra: [{ name: 'search', isRequired: false }]
+        },
+        {
+            type: 'movie',
+            id: 'anime_le_pro',
+            name: 'AnimeHay - Anime Lẻ (Movie)',
             extra: [{ name: 'search', isRequired: false }]
         }
     ]
@@ -44,75 +48,170 @@ const manifest = {
 app.get('/', (req, res) => res.json(manifest));
 app.get('/manifest.json', (req, res) => res.json(manifest));
 
-async function getLatestAnime() {
+async function fetchCategoryItems(categoryType) {
+    let items = [];
     try {
-        const { data } = await client.get('/');
-        const items = [];
-        
-        const regex = /<a[^>]+href="([^"]+)"[^>]*title="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-        let match;
-        while ((match = regex.exec(data)) !== null && items.length < 30) {
-            const link = match[1];
-            const title = match[2];
-            const innerHtml = match[3];
-            
-            if (link && title) {
-                const imgMatch = innerHtml.match(/src="([^"]+)"/);
-                const poster = imgMatch ? imgMatch[1] : '';
-                
-                const slugMatch = link.match(/([^\/]+)\.html$/) || link.match(/\/([^\/]+)$/);
-                const slug = slugMatch ? slugMatch[1] : title;
-                
-                if (!items.some(i => i.name === title)) {
-                    items.push({
-                        id: `ah_${slug}`,
-                        type: 'series',
-                        name: title,
-                        poster: poster.startsWith('http') ? poster : (poster ? `${BASE_URL}${poster}` : ''),
-                        posterShape: 'poster',
-                        releaseInfo: 'AnimeHay'
-                    });
-                }
-            }
+        // Tải nhiều trang để đạt số lượng lớn phim
+        for (let page = 1; page <= 10; page++) {
+            let url = `https://phimapi.com/v1/api/danh-sach/${categoryType}?page=${page}&limit=50`;
+            let res = await axios.get(url, { timeout: 4000 });
+            let list = res.data?.data?.items || [];
+            if (list.length === 0) break;
+            items.push(...list);
         }
-        return items;
     } catch (e) {
-        return [];
+        // Bỏ qua lỗi nhỏ để đảm bảo trả về dữ liệu đã tải được
     }
+    return items;
 }
 
 app.get('/catalog/:type/:id*', async (req, res) => {
-    const items = await getLatestAnime();
-    res.json({ metas: items });
+    let type = req.params.type;
+    let rawId = req.params.id + (req.params[0] || '');
+    rawId = rawId.replace('.json', '');
+
+    if (rawId.includes('search=')) {
+        const queryMatch = rawId.match(/search=([^&]+)/);
+        const keyword = queryMatch ? decodeURIComponent(queryMatch[1]) : '';
+        try {
+            let seriesItems = await fetchCategoryItems('hoat-hinh');
+            let movieItems = await fetchCategoryItems('phim-le');
+            let allItems = [...seriesItems, ...movieItems];
+            const results = [];
+            
+            allItems.forEach(item => {
+                let name = (item.name || '').toLowerCase();
+                let origin = (item.origin_name || '').toLowerCase();
+                let kw = keyword.toLowerCase();
+                if (name.includes(kw) || origin.includes(kw)) {
+                    results.push({
+                        id: `ah_${item.slug}`,
+                        type: item.type === 'single' ? 'movie' : 'series',
+                        name: item.name || item.title,
+                        poster: formatPoster(item.poster_url, item.thumb_url),
+                        posterShape: 'poster',
+                        releaseInfo: `${item.year || '2026'} • ${item.episode_current || 'Full'}`,
+                        description: item.origin_name ? `Tên gốc: ${item.origin_name}` : ''
+                    });
+                }
+            });
+            return res.json({ metas: results });
+        } catch (e) {
+            return res.json({ metas: [] });
+        }
+    }
+
+    try {
+        let rawItems = [];
+        if (type === 'series') {
+            rawItems = await fetchCategoryItems('hoat-hinh');
+        } else {
+            rawItems = await fetchCategoryItems('phim-le');
+        }
+
+        const metas = rawItems.map(item => ({
+            id: `ah_${item.slug}`,
+            type: type,
+            name: item.name || item.title,
+            poster: formatPoster(item.poster_url, item.thumb_url),
+            posterShape: 'poster',
+            releaseInfo: `${item.year || '2026'} • ${item.episode_current || 'Full'}`,
+            description: item.origin_name ? `Tên gốc: ${item.origin_name}` : ''
+        }));
+
+        return res.json({ metas });
+    } catch (e) {
+        return res.json({ metas: [] });
+    }
 });
 
 app.get('/meta/:type/:id*', async (req, res) => {
-    const rawId = req.params.id + (req.params[0] || '');
-    const slug = rawId.replace('.json', '').replace('ah_', '').split(':')[0];
+    try {
+        let rawId = req.params.id + (req.params[0] || '');
+        let slug = rawId.replace('.json', '').replace('ah_', '').split(':')[0];
 
-    res.json({
-        meta: {
-            id: `ah_${slug}`,
-            type: 'series',
-            name: 'AnimeHay Phim',
-            poster: '',
-            description: 'Chi tiết phim từ AnimeHay Standalone Addon',
-            videos: [
-                {
-                    id: `ah_${slug}:1`,
-                    title: 'Tập 1',
-                    season: 1,
-                    episode: 1
-                }
-            ]
+        if (!slug) return res.json({ meta: null });
+
+        let resP = await axios.get(`https://phimapi.com/phim/${slug}`, { timeout: 4000 });
+        let movie = resP.data?.movie;
+        let episodesList = resP.data?.episodes || [];
+
+        if (!movie) return res.json({ meta: null });
+
+        let rawEpisodes = [];
+        for (const s of episodesList) {
+            if (s.server_data && s.server_data.length > rawEpisodes.length) {
+                rawEpisodes = s.server_data;
+            }
         }
-    });
+
+        const moviePoster = formatPoster(movie.poster_url, movie.thumb_url);
+        const videos = rawEpisodes.map((ep, idx) => {
+            let epNum = idx + 1;
+            let epTitle = ep.name ? String(ep.name).trim() : `Tập ${epNum}`;
+            if (!/^tập/i.test(epTitle) && rawEpisodes.length > 1) {
+                epTitle = `Tập ${epTitle}`;
+            }
+            return {
+                id: `ah_${slug}:${idx + 1}`,
+                title: epTitle,
+                thumbnail: moviePoster,
+                released: new Date().toISOString(),
+                season: 1,
+                episode: epNum
+            };
+        });
+
+        return res.json({
+            meta: {
+                id: `ah_${slug}`,
+                type: movie.type === 'single' ? 'movie' : 'series',
+                name: movie.name || movie.title,
+                poster: moviePoster,
+                background: moviePoster,
+                description: movie.content ? movie.content.replace(/<[^>]*>?/gm, '') : '',
+                year: String(movie.year || '2026'),
+                releaseInfo: `${movie.year || '2026'} • ${movie.episode_current || 'Full'}`,
+                videos: videos.length > 0 ? videos : undefined
+            }
+        });
+    } catch (e) {
+        return res.json({ meta: null });
+    }
 });
 
 app.get('/stream/:type/:id*', async (req, res) => {
-    res.json({ streams: [] });
+    try {
+        let rawId = req.params.id + (req.params[0] || '');
+        const parts = rawId.replace('.json', '').split(':');
+        const baseId = parts[0];
+        const epIndex = parts[1] ? parseInt(parts[1]) - 1 : 0;
+
+        const slug = baseId.replace('ah_', '');
+        const streams = [];
+
+        let apiRes = await axios.get(`https://phimapi.com/phim/${slug}`, { timeout: 4000 });
+        const episodesList = apiRes.data?.episodes || [];
+
+        episodesList.forEach((server, sIdx) => {
+            const serverName = server.server_name || `Server ${sIdx + 1}`;
+            const serverData = server.server_data || [];
+            const targetEp = serverData[epIndex] || serverData[0];
+
+            if (targetEp && targetEp.link_m3u8) {
+                streams.push({
+                    title: `AnimeHay Pro - ${serverName}`,
+                    url: targetEp.link_m3u8
+                });
+            }
+        });
+
+        return res.json({ streams });
+    } catch (e) {
+        return res.json({ streams: [] });
+    }
 });
 
 app.listen(process.env.PORT || 3000);
 module.exports = app;
-                  
+            
